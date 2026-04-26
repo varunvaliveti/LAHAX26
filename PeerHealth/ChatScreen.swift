@@ -4,6 +4,7 @@
 //
 
 import SwiftUI
+import UIKit
 
 struct PHChatMessage: Identifiable, Equatable {
     enum Role: Equatable { case agent, user }
@@ -15,13 +16,15 @@ struct PHChatMessage: Identifiable, Equatable {
 struct ChatScreen: View {
     @ObservedObject var backend: BackendClient
     @ObservedObject var autoSyncManager: HealthAutoSyncManager
+    @StateObject private var qa = QAClient()
 
     @AppStorage("peerHealthCompanionName") private var companionName = "GX10"
 
     @State private var draft: String = ""
     @State private var messages: [PHChatMessage] = []
-    @State private var streamingMessageID: UUID?
     @State private var showConnectionSheet = false
+    @State private var keyboardHeight: CGFloat = 0
+    @FocusState private var composerFocused: Bool
 
     var body: some View {
         PointerTrackingScreen { pointer in
@@ -47,7 +50,7 @@ struct ChatScreen: View {
                         ForEach(messages) { m in
                             ChatBubble(message: m)
                         }
-                        if backend.isChatStreaming {
+                        if qa.isAsking {
                             TypingDots()
                                 .padding(.leading, 14)
                                 .padding(.top, 4)
@@ -60,27 +63,50 @@ struct ChatScreen: View {
                 Spacer(minLength: 0)
             }
 
-            VStack {
+            VStack(spacing: 0) {
                 Spacer()
+                if let status = qaStatusText {
+                    Text(status)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(Color.black.opacity(0.55))
+                        .padding(.horizontal, 18)
+                        .padding(.vertical, 6)
+                        .background(
+                            Capsule().fill(Color.white.opacity(0.85))
+                        )
+                        .padding(.bottom, 6)
+                        .transition(.opacity)
+                }
                 composer
                     .padding(.horizontal, 12)
-                    .padding(.bottom, 96)
+                    .padding(.bottom, keyboardHeight > 0 ? keyboardHeight + 8 : 96)
             }
+            .animation(.easeOut(duration: 0.25), value: keyboardHeight)
+            .animation(.easeInOut(duration: 0.2), value: qaStatusText)
         }
         .sheet(isPresented: $showConnectionSheet) {
             ConnectionSheet(backend: backend, autoSyncManager: autoSyncManager)
                 .presentationDetents([.medium, .large])
         }
-        .onAppear { syncSeedMessages() }
-        .onChange(of: backend.streamingChat) { _, new in
-            applyStreamingTokens(new)
+        .onAppear { qa.attach(backend: backend) }
+        .onDisappear { qa.cancel() }
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillChangeFrameNotification)) { notif in
+            guard let frame = notif.userInfo?[UIResponder.keyboardFrameEndUserInfoKey] as? CGRect else { return }
+            let screenHeight = UIScreen.main.bounds.height
+            keyboardHeight = max(0, screenHeight - frame.origin.y)
         }
-        .onChange(of: backend.latestSynthesis) { _, new in
-            guard let new, !new.isEmpty else { return }
-            // Final synthesis arrived; finalize whatever was streaming and append a fresh agent bubble.
-            finalizeStreamingMessage()
-            messages.append(.init(role: .agent, text: new))
+        .onReceive(NotificationCenter.default.publisher(for: UIResponder.keyboardWillHideNotification)) { _ in
+            keyboardHeight = 0
         }
+    }
+
+    private var qaStatusText: String? {
+        if let err = qa.lastError, !qa.isAsking { return "Q&A error: \(err)" }
+        if qa.isAsking {
+            if let label = qa.currentToolLabel { return "Thinking · \(label)" }
+            return "Thinking…"
+        }
+        return nil
     }
 
     private var header: some View {
@@ -157,7 +183,9 @@ struct ChatScreen: View {
 
                 TextField("Ask about your health…", text: $draft)
                     .font(.system(size: 15, weight: .medium))
-                    .foregroundStyle(Color(red: 0.07, green: 0.07, blue: 0.09))
+                    .foregroundColor(Color(red: 0.07, green: 0.07, blue: 0.09))
+                    .tint(Color(red: 0.07, green: 0.07, blue: 0.09))
+                    .focused($composerFocused)
                     .submitLabel(.send)
                     .onSubmit { send() }
 
@@ -187,42 +215,30 @@ struct ChatScreen: View {
             .padding(6)
         }
         .frame(height: 52)
+        .environment(\.colorScheme, .light)
     }
 
     private func send() {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         messages.append(.init(role: .user, text: text))
-        // Reserve a slot for the streaming agent reply.
-        let placeholder = PHChatMessage(role: .agent, text: "")
-        streamingMessageID = placeholder.id
-        messages.append(placeholder)
-        backend.sendAsk(text)
+
+        let pending = PHChatMessage(role: .agent, text: "")
+        let pendingID = pending.id
+        messages.append(pending)
         draft = ""
-    }
 
-    private func applyStreamingTokens(_ accumulated: String) {
-        guard let id = streamingMessageID,
-              let idx = messages.firstIndex(where: { $0.id == id }) else { return }
-        messages[idx].text = accumulated
-    }
-
-    private func finalizeStreamingMessage() {
-        guard let id = streamingMessageID,
-              let idx = messages.firstIndex(where: { $0.id == id }) else {
-            streamingMessageID = nil
-            return
-        }
-        if messages[idx].text.isEmpty {
-            messages.remove(at: idx)
-        }
-        streamingMessageID = nil
-    }
-
-    private func syncSeedMessages() {
-        guard messages.isEmpty else { return }
-        if let s = backend.latestSynthesis, !s.isEmpty {
-            messages.append(.init(role: .agent, text: s))
+        qa.ask(text) { answer in
+            let trimmed = answer.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let idx = messages.firstIndex(where: { $0.id == pendingID }) {
+                if trimmed.isEmpty {
+                    messages.remove(at: idx)
+                } else {
+                    messages[idx].text = trimmed
+                }
+            } else if !trimmed.isEmpty {
+                messages.append(.init(role: .agent, text: trimmed))
+            }
         }
     }
 }
@@ -301,32 +317,37 @@ private struct BubbleShape: Shape {
 }
 
 private struct TypingDots: View {
-    @State private var phase: Double = 0
-
     var body: some View {
-        HStack(spacing: 4) {
-            ForEach(0..<3) { i in
-                Circle()
-                    .fill(Color.black.opacity(0.4))
-                    .frame(width: 6, height: 6)
-                    .offset(y: animatedY(for: i))
+        TimelineView(.animation) { context in
+            let now = context.date.timeIntervalSinceReferenceDate
+            HStack(spacing: 5) {
+                ForEach(0..<3) { i in
+                    Circle()
+                        .fill(Color.black.opacity(0.5))
+                        .frame(width: 7, height: 7)
+                        .opacity(opacity(now: now, index: i))
+                        .scaleEffect(scale(now: now, index: i))
+                }
             }
-        }
-        .padding(.vertical, 8)
-        .onAppear {
-            withAnimation(.easeInOut(duration: 1.2).repeatForever(autoreverses: false)) {
-                phase = 1.0
-            }
+            .padding(.vertical, 6)
         }
     }
 
-    private func animatedY(for index: Int) -> CGFloat {
-        let stagger = Double(index) * 0.15
-        let t = (phase + stagger).truncatingRemainder(dividingBy: 1.0)
-        if t > 0.0 && t < 0.3 {
-            return CGFloat(-3.0 * sin(t / 0.3 * .pi))
-        }
-        return 0
+    private func phase(now: Double, index: Int) -> Double {
+        let cycle = 1.1
+        let stagger = Double(index) * 0.18
+        return ((now + stagger).truncatingRemainder(dividingBy: cycle)) / cycle
+    }
+
+    private func opacity(now: Double, index: Int) -> Double {
+        let p = phase(now: now, index: index)
+        // Fade between 0.35 and 1.0 across the cycle.
+        return 0.35 + 0.65 * (0.5 - 0.5 * cos(p * 2 * .pi))
+    }
+
+    private func scale(now: Double, index: Int) -> CGFloat {
+        let p = phase(now: now, index: index)
+        return 0.85 + 0.25 * (0.5 - 0.5 * cos(p * 2 * .pi))
     }
 }
 

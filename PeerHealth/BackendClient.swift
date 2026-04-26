@@ -373,6 +373,10 @@ final class BackendClient: NSObject, ObservableObject {
             streamingChat += txt
             isChatStreaming = true
 
+        case "chat_started":
+            // QA-session handshake from the server; not user-facing on /ws.
+            return
+
         default:
             appendEvent(.init(timestamp: Date(), kind: .system, label: "[\(typeStr)] \(text)"))
         }
