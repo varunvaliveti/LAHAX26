@@ -9,13 +9,24 @@ import Network
 
 @MainActor
 final class TCPConnectionManager: ObservableObject {
-    @Published var host = "10.30.77.124"
-    @Published var port = "8000"
+    @Published var host: String {
+        didSet { UserDefaults.standard.set(host, forKey: "peerHealthHost") }
+    }
+    @Published var port: String {
+        didSet { UserDefaults.standard.set(port, forKey: "peerHealthPort") }
+    }
     @Published private(set) var statusText = "Disconnected"
     @Published private(set) var isConnected = false
 
     private let queue = DispatchQueue(label: "PeerHealth.TCPConnection")
     private var connection: NWConnection?
+
+    init() {
+        let storedHost = UserDefaults.standard.string(forKey: "peerHealthHost")
+        self.host = (storedHost?.isEmpty == false) ? storedHost! : "10.30.77.124"
+        let storedPort = UserDefaults.standard.string(forKey: "peerHealthPort")
+        self.port = (storedPort?.isEmpty == false) ? storedPort! : "8000"
+    }
 
     func connect(onReceive: @escaping (String) -> Void) {
         let trimmedHost = host.trimmingCharacters(in: .whitespacesAndNewlines)
