@@ -8,13 +8,13 @@ import SwiftUI
 // MARK: - Tabs
 
 enum PHTab: String, CaseIterable, Identifiable {
-    case home, insights, chat, profile
+    case home, network, chat, profile
     var id: String { rawValue }
 
     var label: String {
         switch self {
         case .home: return "Home"
-        case .insights: return "Insights"
+        case .network: return "Network"
         case .chat: return "Chat"
         case .profile: return "You"
         }
@@ -23,7 +23,7 @@ enum PHTab: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .home: return "house.fill"
-        case .insights: return "chart.line.uptrend.xyaxis"
+        case .network: return "point.3.connected.trianglepath.dotted"
         case .chat: return "ellipsis.bubble.fill"
         case .profile: return "person.fill"
         }

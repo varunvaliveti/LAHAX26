@@ -9,7 +9,7 @@ struct OnboardingScreen: View {
     @AppStorage("peerHealthHasOnboarded") private var hasOnboarded = false
     @AppStorage("peerHealthUserName") private var userName = ""
     @AppStorage("peerHealthCompanionName") private var companionName = ""
-    @AppStorage("peerHealthHost") private var host = "10.30.77.124"
+    @AppStorage("peerHealthHost") private var host = "100.75.187.58"
 
     @State private var step: Int = 0
     @State private var draftName: String = ""
@@ -61,7 +61,7 @@ struct OnboardingScreen: View {
         .onAppear {
             draftName = userName
             draftCompanion = companionName
-            draftHost = host.isEmpty ? "10.30.77.124" : host
+            draftHost = host.isEmpty ? "100.75.187.58" : host
         }
     }
 
@@ -245,7 +245,7 @@ private struct FormStep: View {
 
                 OBField(
                     label: "Network address",
-                    placeholder: "10.30.77.124",
+                    placeholder: "100.75.187.58",
                     systemImage: "globe",
                     text: $host,
                     isFocused: focused == .host,
@@ -280,7 +280,7 @@ private struct FormStep: View {
                 Image(systemName: "lock.shield.fill")
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(Color(red: 0.20, green: 0.78, blue: 0.35))
-                Text("Direct TCP · stays on your network")
+                Text("Direct WebSocket · stays on your network")
                     .font(.system(size: 11, weight: .medium))
                     .foregroundStyle(Color.black.opacity(0.45))
             }
@@ -455,7 +455,7 @@ private struct ConnectingStep: View {
     private var subtitle: String {
         switch phase {
         case .connecting:
-            return "tcp://\(host):8000"
+            return "ws://\(host):8000/ws"
         case .connected:
             return "linked · \(companion.isEmpty ? "GX10" : companion)"
         }

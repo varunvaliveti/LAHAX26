@@ -9,23 +9,18 @@ struct PHChatMessage: Identifiable, Equatable {
     enum Role: Equatable { case agent, user }
     let id = UUID()
     let role: Role
-    let text: String
+    var text: String
 }
 
 struct ChatScreen: View {
-    @ObservedObject var connectionManager: TCPConnectionManager
+    @ObservedObject var backend: BackendClient
     @ObservedObject var autoSyncManager: HealthAutoSyncManager
 
     @AppStorage("peerHealthCompanionName") private var companionName = "GX10"
 
     @State private var draft: String = ""
-    @State private var messages: [PHChatMessage] = [
-        .init(role: .agent, text: "Evening. Synced 142 new samples since 6 PM."),
-        .init(role: .agent, text: "Quick read: HRV +8 ms, RHR settled into the low 50s. You look recovered."),
-        .init(role: .user, text: "any reason my resting HR was higher last tuesday?"),
-        .init(role: .agent, text: "Tuesday's RHR ran 6 bpm above baseline all afternoon. The night before you only slept 5h 12m, you logged a 45-min run that morning, and there was an HR spike around 11 PM. Short sleep + late-evening cardiac load almost certainly carried over."),
-        .init(role: .user, text: "got it. anything to do tonight?")
-    ]
+    @State private var messages: [PHChatMessage] = []
+    @State private var streamingMessageID: UUID?
     @State private var showConnectionSheet = false
 
     var body: some View {
@@ -38,7 +33,7 @@ struct ChatScreen: View {
     private func screenBody(pointer: UnitPoint?) -> some View {
         ZStack {
             Color(red: 0.97, green: 0.96, blue: 0.95).ignoresSafeArea()
-            JellyBackground(palette: .iridescent, blur: 75, intensity: 1.0, speed: 0.7, opacity: 0.55, pointer: pointer)
+            JellyBackground(palette: .iridescent, blur: 90, intensity: 1.3, speed: 0.7, opacity: 0.95, pointer: pointer)
                 .ignoresSafeArea()
 
             VStack(spacing: 0) {
@@ -52,9 +47,11 @@ struct ChatScreen: View {
                         ForEach(messages) { m in
                             ChatBubble(message: m)
                         }
-                        TypingDots()
-                            .padding(.leading, 14)
-                            .padding(.top, 4)
+                        if backend.isChatStreaming {
+                            TypingDots()
+                                .padding(.leading, 14)
+                                .padding(.top, 4)
+                        }
                     }
                     .padding(.horizontal, 14)
                     .padding(.bottom, 200)
@@ -71,10 +68,18 @@ struct ChatScreen: View {
             }
         }
         .sheet(isPresented: $showConnectionSheet) {
-            ConnectionSheet(connectionManager: connectionManager, autoSyncManager: autoSyncManager) { line in
-                messages.append(.init(role: .agent, text: line))
-            }
-            .presentationDetents([.medium, .large])
+            ConnectionSheet(backend: backend, autoSyncManager: autoSyncManager)
+                .presentationDetents([.medium, .large])
+        }
+        .onAppear { syncSeedMessages() }
+        .onChange(of: backend.streamingChat) { _, new in
+            applyStreamingTokens(new)
+        }
+        .onChange(of: backend.latestSynthesis) { _, new in
+            guard let new, !new.isEmpty else { return }
+            // Final synthesis arrived; finalize whatever was streaming and append a fresh agent bubble.
+            finalizeStreamingMessage()
+            messages.append(.init(role: .agent, text: new))
         }
     }
 
@@ -94,7 +99,7 @@ struct ChatScreen: View {
 
                 HStack(spacing: 5) {
                     Circle()
-                        .fill(connectionManager.isConnected ? Color(red: 0.20, green: 0.78, blue: 0.35) : Color(red: 0.95, green: 0.66, blue: 0.07))
+                        .fill(backend.isConnected ? Color(red: 0.20, green: 0.78, blue: 0.35) : Color(red: 0.95, green: 0.66, blue: 0.07))
                         .frame(width: 6, height: 6)
                     Text(statusLine)
                         .font(.system(size: 11, weight: .medium))
@@ -123,10 +128,7 @@ struct ChatScreen: View {
     private var statusLine: String {
         let companion = companionName.trimmingCharacters(in: .whitespaces)
         let label = companion.isEmpty ? "GX10" : companion
-        if connectionManager.isConnected {
-            return "Local · \(label)"
-        }
-        return "Offline · \(label)"
+        return backend.isConnected ? "Live · \(label)" : "Offline · \(label)"
     }
 
     private var composer: some View {
@@ -191,10 +193,37 @@ struct ChatScreen: View {
         let text = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
         messages.append(.init(role: .user, text: text))
-        if connectionManager.isConnected {
-            connectionManager.send(text)
-        }
+        // Reserve a slot for the streaming agent reply.
+        let placeholder = PHChatMessage(role: .agent, text: "")
+        streamingMessageID = placeholder.id
+        messages.append(placeholder)
+        backend.sendAsk(text)
         draft = ""
+    }
+
+    private func applyStreamingTokens(_ accumulated: String) {
+        guard let id = streamingMessageID,
+              let idx = messages.firstIndex(where: { $0.id == id }) else { return }
+        messages[idx].text = accumulated
+    }
+
+    private func finalizeStreamingMessage() {
+        guard let id = streamingMessageID,
+              let idx = messages.firstIndex(where: { $0.id == id }) else {
+            streamingMessageID = nil
+            return
+        }
+        if messages[idx].text.isEmpty {
+            messages.remove(at: idx)
+        }
+        streamingMessageID = nil
+    }
+
+    private func syncSeedMessages() {
+        guard messages.isEmpty else { return }
+        if let s = backend.latestSynthesis, !s.isEmpty {
+            messages.append(.init(role: .agent, text: s))
+        }
     }
 }
 
@@ -205,7 +234,7 @@ private struct ChatBubble: View {
         HStack {
             if message.role == .user { Spacer(minLength: 40) }
 
-            Text(message.text)
+            Text(message.text.isEmpty ? "…" : message.text)
                 .font(.system(size: 15, weight: .medium))
                 .tracking(-0.2)
                 .lineSpacing(2)
@@ -301,22 +330,21 @@ private struct TypingDots: View {
     }
 }
 
-// MARK: - Connection sheet (preserves the existing TCP IP/port + auto-sync controls)
+// MARK: - Connection sheet
 
 private struct ConnectionSheet: View {
-    @ObservedObject var connectionManager: TCPConnectionManager
+    @ObservedObject var backend: BackendClient
     @ObservedObject var autoSyncManager: HealthAutoSyncManager
-    var onAgentLine: (String) -> Void
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Local agent (GX10)") {
+                Section("Backend (GX10)") {
                     HStack {
                         Text("IP address")
                         Spacer()
-                        TextField("10.30.77.124", text: $connectionManager.host)
+                        TextField(BackendClient.defaultHost, text: $backend.host)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .multilineTextAlignment(.trailing)
@@ -324,49 +352,44 @@ private struct ConnectionSheet: View {
                     HStack {
                         Text("Port")
                         Spacer()
-                        TextField("8000", text: $connectionManager.port)
+                        TextField(BackendClient.defaultPort, text: $backend.port)
                             .keyboardType(.numberPad)
+                            .multilineTextAlignment(.trailing)
+                    }
+                    HStack {
+                        Text("User ID")
+                        Spacer()
+                        TextField(BackendClient.defaultUserID, text: $backend.userID)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
                             .multilineTextAlignment(.trailing)
                     }
                     HStack {
                         Text("Status")
                         Spacer()
-                        Text(connectionManager.statusText)
+                        Text(backend.statusText)
                             .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.trailing)
                     }
-                    Button(connectionManager.isConnected ? "Disconnect" : "Connect") {
-                        if connectionManager.isConnected {
-                            connectionManager.disconnect()
-                        } else {
-                            connectionManager.connect { response in
-                                guard !response.isEmpty else { return }
-                                onAgentLine(response)
-                            }
+                    Button(backend.isConnected ? "Reconnect" : "Connect") {
+                        backend.reconnectFromSettings()
+                    }
+                    if backend.isConnected {
+                        Button("Disconnect", role: .destructive) {
+                            backend.disconnect()
                         }
                     }
-                    .foregroundStyle(connectionManager.isConnected ? Color.red : Color.accentColor)
                 }
 
                 Section("HealthKit auto sync") {
-                    Toggle("Forward updates over TCP", isOn: Binding(
-                        get: { autoSyncManager.isSyncEnabled },
-                        set: { newValue in
-                            if newValue {
-                                Task {
-                                    await autoSyncManager.startAutoSync { payload in
-                                        if connectionManager.isConnected {
-                                            connectionManager.send(payload)
-                                        }
-                                    }
-                                }
-                            } else {
-                                autoSyncManager.stopAutoSync()
-                            }
-                        }
-                    ))
                     Text(autoSyncManager.statusText)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
+                    if let when = autoSyncManager.lastChangeAt {
+                        Text("Last data change: \(Self.timeFormatter.string(from: when))")
+                            .font(.footnote)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .navigationTitle("Connection")
@@ -378,4 +401,11 @@ private struct ConnectionSheet: View {
             }
         }
     }
+
+    private static let timeFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateStyle = .none
+        f.timeStyle = .medium
+        return f
+    }()
 }

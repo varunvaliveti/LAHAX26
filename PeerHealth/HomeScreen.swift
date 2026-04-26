@@ -7,7 +7,7 @@ import SwiftUI
 
 struct HomeScreen: View {
     @ObservedObject var viewModel: HealthDashboardViewModel
-    @ObservedObject var connectionManager: TCPConnectionManager
+    @ObservedObject var backend: BackendClient
     var useDemoData: Bool
 
     @AppStorage("peerHealthCompanionName") private var companionName = "GX10"
@@ -23,7 +23,7 @@ struct HomeScreen: View {
     private func screenBody(pointer: UnitPoint?) -> some View {
         ZStack {
             Color(red: 0.98, green: 0.98, blue: 0.97).ignoresSafeArea()
-            JellyBackground(palette: .iridescent, blur: 85, intensity: 1.0, speed: 0.7, opacity: 0.45, pointer: pointer)
+            JellyBackground(palette: .iridescent, blur: 95, intensity: 1.35, speed: 0.7, opacity: 0.92, pointer: pointer)
                 .ignoresSafeArea()
 
             ScrollView(showsIndicators: false) {
@@ -50,13 +50,13 @@ struct HomeScreen: View {
                     metricsGrid
                         .padding(.horizontal, 16)
 
-                    agentQuoteBox
+                    sleepCard
                         .padding(.horizontal, 16)
-                        .padding(.top, 14)
+                        .padding(.top, 16)
 
                     terminalLog
                         .padding(.horizontal, 18)
-                        .padding(.top, 12)
+                        .padding(.top, 16)
 
                     statusFooter
                         .padding(.horizontal, 14)
@@ -80,7 +80,7 @@ struct HomeScreen: View {
                     .tracking(0.2)
                     .foregroundStyle(Color.black)
                 Circle()
-                    .fill(connectionManager.isConnected
+                    .fill(backend.isConnected
                           ? Color(red: 0.20, green: 0.78, blue: 0.35)
                           : Color(red: 0.95, green: 0.66, blue: 0.07))
                     .frame(width: 7, height: 7)
@@ -226,42 +226,35 @@ struct HomeScreen: View {
         )
     }
 
-    // MARK: - Agent quote box
+    // MARK: - Sleep card (replaces agent block — agent now lives on Network tab)
 
-    private var agentQuoteBox: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 4) {
-                Text(">")
-                Text("AGENT · \(timeShort)")
-            }
-            .font(.system(size: 9, weight: .bold, design: .monospaced))
-            .tracking(1.4)
-            .foregroundStyle(Color.black.opacity(0.55))
-
-            VStack(alignment: .leading, spacing: 4) {
-                Text("hrv recovered fully. zone-2 walk logged.")
-                    .font(.system(size: 12, weight: .medium, design: .monospaced))
-                    .foregroundStyle(Color.black)
-                HStack(spacing: 0) {
-                    Text("sleep window opens in ")
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(Color.black)
-                    Text("56m")
-                        .font(.system(size: 12, weight: .bold, design: .monospaced))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(Color.black)
-                    Text(".")
-                        .font(.system(size: 12, weight: .medium, design: .monospaced))
-                        .foregroundStyle(Color.black)
+    private var sleepCard: some View {
+        let week = viewModel.snapshot.weekSleep.map { (label: $0.weekdayLabel, hours: $0.hours) }
+        let avg = viewModel.snapshot.averageSleepThisWeek
+        return VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .firstTextBaseline) {
+                Text("SLEEP · 7d")
+                    .font(.system(size: 10, weight: .bold, design: .monospaced))
+                    .tracking(1.4)
+                    .foregroundStyle(Color.black.opacity(0.55))
+                Spacer()
+                if let avg {
+                    HStack(alignment: .firstTextBaseline, spacing: 3) {
+                        Text(formatHours(avg))
+                            .font(.system(size: 18, weight: .bold, design: .monospaced))
+                            .foregroundStyle(Color.black)
+                        Text("avg")
+                            .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                            .foregroundStyle(Color.black.opacity(0.5))
+                    }
                 }
             }
-            .padding(.top, 2)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            SleepBars(data: week,
+                      accent: Color(red: 0.37, green: 0.36, blue: 0.90),
+                      height: 78)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, 14)
+        .padding(.vertical, 12)
         .background(
             Rectangle().fill(.ultraThinMaterial)
                 .overlay(Rectangle().fill(Color.white.opacity(0.55)))
@@ -269,50 +262,68 @@ struct HomeScreen: View {
         .overlay(Rectangle().stroke(Color.black.opacity(0.16), lineWidth: 1))
     }
 
-    // MARK: - Terminal log
+    private func formatHours(_ v: Double) -> String {
+        let h = Int(v)
+        let m = Int(((v - Double(h)) * 60).rounded())
+        return "\(h):\(String(format: "%02d", m))"
+    }
+
+    // MARK: - Terminal log (live event feed)
 
     private var terminalLog: some View {
         let lines = logLines
         return VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+            if lines.isEmpty {
                 HStack(alignment: .firstTextBaseline, spacing: 4) {
                     Text("›")
-                        .foregroundStyle(line.color)
-                    Text(line.text)
-                        .foregroundStyle(Color.black.opacity(0.7))
+                        .foregroundStyle(Color.black.opacity(0.4))
+                    Text("no events yet · waiting on backend")
+                        .foregroundStyle(Color.black.opacity(0.5))
                 }
                 .font(.system(size: 10.5, design: .monospaced))
                 .lineSpacing(6)
+            } else {
+                ForEach(Array(lines.enumerated()), id: \.offset) { _, line in
+                    HStack(alignment: .firstTextBaseline, spacing: 4) {
+                        Text("›")
+                            .foregroundStyle(line.color)
+                        Text(line.text)
+                            .foregroundStyle(Color.black.opacity(0.7))
+                            .lineLimit(2)
+                    }
+                    .font(.system(size: 10.5, design: .monospaced))
+                    .lineSpacing(6)
+                }
             }
         }
     }
 
     private var logLines: [(text: String, color: Color)] {
-        let now = timeShort
-        let mins = Calendar.current.component(.minute, from: .now)
-        let prev1 = String(format: "%02d:%02d", Calendar.current.component(.hour, from: .now), max(0, mins - 3))
-        let prev2 = String(format: "%02d:%02d", Calendar.current.component(.hour, from: .now), max(0, mins - 5))
-        let prev3 = String(format: "%02d:%02d", Calendar.current.component(.hour, from: .now), max(0, mins - 32))
-
-        let companion = companionShortName
-        return [
-            ("\(now) · synced \(syncedSamples) samples", Color(red: 0.20, green: 0.78, blue: 0.35)),
-            ("\(now) · agent: \(agentLogLine)",         Color(red: 0.20, green: 0.78, blue: 0.35)),
-            ("\(prev1) · sleep window in 56m",          Color(red: 0.37, green: 0.36, blue: 0.90)),
-            ("\(prev2) · workout: 32m walk · z2",       Color.black.opacity(0.5)),
-            ("\(prev3) · anchor saved · hr@\(companion)", Color.black.opacity(0.5))
-        ]
+        let timeFmt = DateFormatter()
+        timeFmt.dateFormat = "HH:mm"
+        let recent = backend.feed.suffix(8).reversed()
+        return recent.map { ev in
+            let stamp = timeFmt.string(from: ev.timestamp)
+            let body = "\(stamp) · \(ev.label)"
+            return (body, color(for: ev.kind))
+        }
     }
 
-    private var syncedSamples: Int {
-        let count = viewModel.snapshot.metrics.filter { $0.value != nil }.count
-        return max(count * 12, connectionManager.isConnected ? 142 : 0)
-    }
-
-    private var agentLogLine: String {
-        if readinessScore >= 78 { return "hrv trending up" }
-        if readinessScore >= 60 { return "signals look mixed" }
-        return "recovery looks light"
+    private func color(for kind: BackendEvent.Kind) -> Color {
+        switch kind {
+        case .synthesis, .agentText:
+            return Color(red: 0.20, green: 0.78, blue: 0.35)
+        case .noAnomaly:
+            return Color(red: 0.37, green: 0.36, blue: 0.90)
+        case .shoutPublished, .peerActive, .peerReply:
+            return Color(red: 0.75, green: 0.35, blue: 0.95)
+        case .agentStep:
+            return Color(red: 0.95, green: 0.66, blue: 0.07)
+        case .toolCall, .toolResult:
+            return Color.black.opacity(0.5)
+        case .chatToken, .system:
+            return Color.black.opacity(0.4)
+        }
     }
 
     // MARK: - Status footer
@@ -321,7 +332,7 @@ struct HomeScreen: View {
         HStack {
             HStack(spacing: 4) {
                 Circle()
-                    .fill(connectionManager.isConnected
+                    .fill(backend.isConnected
                           ? Color(red: 0.20, green: 0.78, blue: 0.35)
                           : Color(red: 0.95, green: 0.66, blue: 0.07))
                     .frame(width: 7, height: 7)
@@ -331,7 +342,7 @@ struct HomeScreen: View {
                     .foregroundStyle(Color.black.opacity(0.7))
             }
             Spacer()
-            Text(throughputText)
+            Text(eventThroughput)
                 .font(.system(size: 9.5, weight: .bold, design: .monospaced))
                 .tracking(0.6)
                 .foregroundStyle(Color.black.opacity(0.7))
@@ -356,28 +367,16 @@ struct HomeScreen: View {
         return raw.isEmpty ? "GX10" : raw
     }
 
-    private var throughputText: String {
-        if connectionManager.isConnected {
-            return "↑\(String(format: "%.1f", upKB))KB ↓\(String(format: "%.1f", downKB))KB"
-        }
-        return "↑0.0KB ↓0.0KB"
-    }
-
-    private var upKB: Double {
-        // synthesize from sample count so it feels live
-        Double(syncedSamples) * 0.03
-    }
-
-    private var downKB: Double {
-        connectionManager.isConnected ? 0.8 : 0.0
+    private var eventThroughput: String {
+        "events: \(backend.feed.count)"
     }
 
     private var syncStatusText: String {
-        connectionManager.isConnected ? "SYNCED" : "OFFLINE"
+        backend.isConnected ? "LIVE" : "OFFLINE"
     }
 
     private var syncStatusColor: Color {
-        connectionManager.isConnected
+        backend.isConnected
             ? Color(red: 0.20, green: 0.78, blue: 0.35)
             : Color(red: 0.95, green: 0.66, blue: 0.07)
     }

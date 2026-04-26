@@ -7,7 +7,7 @@ import SwiftUI
 
 struct ProfileScreen: View {
     @ObservedObject var viewModel: HealthDashboardViewModel
-    @ObservedObject var connectionManager: TCPConnectionManager
+    @ObservedObject var backend: BackendClient
     @ObservedObject var autoSyncManager: HealthAutoSyncManager
     @Binding var useDemoData: Bool
 
@@ -28,7 +28,7 @@ struct ProfileScreen: View {
     private func screenBody(pointer: UnitPoint?) -> some View {
         ZStack {
             Color(red: 0.97, green: 0.96, blue: 0.95).ignoresSafeArea()
-            JellyBackground(palette: .iridescent, blur: 70, intensity: 1.0, speed: 0.7, opacity: 0.7, pointer: pointer)
+            JellyBackground(palette: .iridescent, blur: 85, intensity: 1.3, speed: 0.7, opacity: 1.0, pointer: pointer)
                 .ignoresSafeArea()
 
             ScrollView(showsIndicators: false) {
@@ -49,8 +49,7 @@ struct ProfileScreen: View {
                         .init(symbol: "heart.fill", color: Color(red: 1.0, green: 0.23, blue: 0.36),
                               label: "HealthKit access", detail: healthKitDetail),
                         .init(symbol: "bolt.fill", color: Color(red: 1.0, green: 0.58, blue: 0.0),
-                              label: "Background sync", detail: autoSyncManager.isSyncEnabled ? "On" : "Off",
-                              action: toggleAutoSync),
+                              label: "Background sync", detail: autoSyncManager.isSyncEnabled ? "On" : "Off"),
                         .init(symbol: "checkmark.shield.fill", color: Color(red: 0.20, green: 0.78, blue: 0.35),
                               label: "Demo mode", detail: useDemoData ? "On" : "Off",
                               action: { useDemoData.toggle() })
@@ -80,7 +79,7 @@ struct ProfileScreen: View {
             }
         }
         .sheet(isPresented: $showConnectionSheet) {
-            EditConnectionSheet(connectionManager: connectionManager, autoSyncManager: autoSyncManager)
+            EditConnectionSheet(backend: backend, autoSyncManager: autoSyncManager)
                 .presentationDetents([.medium, .large])
         }
         .confirmationDialog(
@@ -132,7 +131,7 @@ struct ProfileScreen: View {
     }
 
     private func signOut() {
-        connectionManager.disconnect()
+        backend.disconnect()
         autoSyncManager.stopAutoSync()
         hasOnboarded = false
     }
@@ -177,26 +176,26 @@ struct ProfileScreen: View {
                             .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
 
                         VStack(alignment: .leading, spacing: 2) {
-                            Text(connectionManager.isConnected ? "Connected to \(companionDisplayName)" : "\(companionDisplayName) offline")
+                            Text(backend.isConnected ? "Connected to \(companionDisplayName)" : "\(companionDisplayName) offline")
                                 .font(.system(size: 14, weight: .bold))
                                 .foregroundStyle(Color(red: 0.07, green: 0.07, blue: 0.09))
-                            Text("\(connectionManager.host) : \(connectionManager.port) · TCP")
+                            Text("\(backend.host) : \(backend.port) · ws")
                                 .font(.system(size: 11, weight: .medium))
                                 .foregroundStyle(Color.black.opacity(0.55))
                         }
 
                         Spacer()
 
-                        Text(connectionManager.isConnected ? "LIVE" : "OFFLINE")
+                        Text(backend.isConnected ? "LIVE" : "OFFLINE")
                             .font(.system(size: 11, weight: .bold))
                             .tracking(0.3)
-                            .foregroundStyle(connectionManager.isConnected
+                            .foregroundStyle(backend.isConnected
                                              ? Color(red: 0.12, green: 0.48, blue: 0.24)
                                              : Color.black.opacity(0.45))
                             .padding(.horizontal, 10)
                             .padding(.vertical, 5)
                             .background(
-                                Capsule().fill(connectionManager.isConnected
+                                Capsule().fill(backend.isConnected
                                                ? Color(red: 0.20, green: 0.78, blue: 0.35).opacity(0.15)
                                                : Color.black.opacity(0.06))
                             )
@@ -223,7 +222,7 @@ struct ProfileScreen: View {
 
     private var syncSummary: String {
         let status = autoSyncManager.isSyncEnabled ? "auto sync on" : "auto sync off"
-        return "↑ \(status)\n↓ \(connectionManager.statusText.lowercased())"
+        return "↑ \(status)\n↓ \(backend.statusText.lowercased())"
     }
 
     // MARK: - Settings rows
@@ -273,20 +272,6 @@ struct ProfileScreen: View {
     private var healthKitDetail: String {
         let count = viewModel.snapshot.metrics.filter { $0.value != nil }.count
         return count > 0 ? "\(count) types" : "Not granted"
-    }
-
-    private func toggleAutoSync() {
-        if autoSyncManager.isSyncEnabled {
-            autoSyncManager.stopAutoSync()
-        } else {
-            Task {
-                await autoSyncManager.startAutoSync { payload in
-                    if connectionManager.isConnected {
-                        connectionManager.send(payload)
-                    }
-                }
-            }
-        }
     }
 }
 
@@ -342,18 +327,18 @@ private struct SettingRowView: View {
 }
 
 private struct EditConnectionSheet: View {
-    @ObservedObject var connectionManager: TCPConnectionManager
+    @ObservedObject var backend: BackendClient
     @ObservedObject var autoSyncManager: HealthAutoSyncManager
     @Environment(\.dismiss) private var dismiss
 
     var body: some View {
         NavigationStack {
             Form {
-                Section("Local agent (GX10)") {
+                Section("Backend (GX10)") {
                     HStack {
                         Text("IP address")
                         Spacer()
-                        TextField("10.30.77.124", text: $connectionManager.host)
+                        TextField(BackendClient.defaultHost, text: $backend.host)
                             .textInputAutocapitalization(.never)
                             .autocorrectionDisabled()
                             .multilineTextAlignment(.trailing)
@@ -361,40 +346,32 @@ private struct EditConnectionSheet: View {
                     HStack {
                         Text("Port")
                         Spacer()
-                        TextField("8000", text: $connectionManager.port)
+                        TextField(BackendClient.defaultPort, text: $backend.port)
                             .keyboardType(.numberPad)
                             .multilineTextAlignment(.trailing)
                     }
-                    Text(connectionManager.statusText)
+                    HStack {
+                        Text("User ID")
+                        Spacer()
+                        TextField(BackendClient.defaultUserID, text: $backend.userID)
+                            .textInputAutocapitalization(.never)
+                            .autocorrectionDisabled()
+                            .multilineTextAlignment(.trailing)
+                    }
+                    Text(backend.statusText)
                         .font(.footnote)
                         .foregroundStyle(.secondary)
-                    Button(connectionManager.isConnected ? "Disconnect" : "Connect") {
-                        if connectionManager.isConnected {
-                            connectionManager.disconnect()
-                        } else {
-                            connectionManager.connect { _ in }
+                    Button(backend.isConnected ? "Reconnect" : "Connect") {
+                        backend.reconnectFromSettings()
+                    }
+                    if backend.isConnected {
+                        Button("Disconnect", role: .destructive) {
+                            backend.disconnect()
                         }
                     }
-                    .foregroundStyle(connectionManager.isConnected ? Color.red : Color.accentColor)
                 }
 
                 Section("HealthKit auto sync") {
-                    Toggle("Forward updates over TCP", isOn: Binding(
-                        get: { autoSyncManager.isSyncEnabled },
-                        set: { newValue in
-                            if newValue {
-                                Task {
-                                    await autoSyncManager.startAutoSync { payload in
-                                        if connectionManager.isConnected {
-                                            connectionManager.send(payload)
-                                        }
-                                    }
-                                }
-                            } else {
-                                autoSyncManager.stopAutoSync()
-                            }
-                        }
-                    ))
                     Text(autoSyncManager.statusText)
                         .font(.footnote)
                         .foregroundStyle(.secondary)

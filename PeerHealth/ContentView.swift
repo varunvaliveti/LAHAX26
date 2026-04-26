@@ -9,12 +9,12 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var viewModel = HealthDashboardViewModel()
-    @StateObject private var tcpConnectionManager = TCPConnectionManager()
+    @StateObject private var backendClient = BackendClient()
     @StateObject private var healthAutoSyncManager = HealthAutoSyncManager()
     @State private var selectedTab: PHTab = .home
     @AppStorage("peerHealthUseDemoData") private var useDemoData = false
     @AppStorage("peerHealthHasOnboarded") private var hasOnboarded = false
-    @AppStorage("peerHealthHost") private var storedHost = "10.30.77.124"
+    @Environment(\.scenePhase) private var scenePhase
 
     var body: some View {
         Group {
@@ -34,16 +34,16 @@ struct ContentView: View {
                 switch selectedTab {
                 case .home:
                     HomeScreen(viewModel: viewModel,
-                               connectionManager: tcpConnectionManager,
+                               backend: backendClient,
                                useDemoData: useDemoData)
-                case .insights:
-                    InsightsScreen(viewModel: viewModel, useDemoData: useDemoData)
+                case .network:
+                    NetworkScreen(backend: backendClient)
                 case .chat:
-                    ChatScreen(connectionManager: tcpConnectionManager,
+                    ChatScreen(backend: backendClient,
                                autoSyncManager: healthAutoSyncManager)
                 case .profile:
                     ProfileScreen(viewModel: viewModel,
-                                  connectionManager: tcpConnectionManager,
+                                  backend: backendClient,
                                   autoSyncManager: healthAutoSyncManager,
                                   useDemoData: $useDemoData)
                 }
@@ -54,16 +54,28 @@ struct ContentView: View {
         }
         .ignoresSafeArea(.keyboard, edges: .bottom)
         .task {
-            if tcpConnectionManager.host != storedHost {
-                tcpConnectionManager.host = storedHost
-            }
             await viewModel.bootstrap(useSimulation: useDemoData)
+            backendClient.refreshFromDefaults()
+            backendClient.connect()
+            await healthAutoSyncManager.startAutoSync { [weak backendClient, weak healthAutoSyncManager] in
+                guard let backendClient, let healthAutoSyncManager else { return }
+                Task { @MainActor in
+                    let bundle = await SamplesBundleBuilder.build(store: healthAutoSyncManager.sharedHealthStore)
+                    await backendClient.pushHealthData(samples: bundle)
+                }
+            }
+            // Initial push so the backend has something to aggregate even if no
+            // observer fires in the first session.
+            let bundle = await SamplesBundleBuilder.build(store: healthAutoSyncManager.sharedHealthStore)
+            await backendClient.pushHealthData(samples: bundle)
         }
         .onChange(of: useDemoData) { _, new in
             Task { await viewModel.bootstrap(useSimulation: new) }
         }
-        .onChange(of: storedHost) { _, new in
-            tcpConnectionManager.host = new
+        .onChange(of: scenePhase) { _, new in
+            if new == .active {
+                backendClient.ensureConnected()
+            }
         }
     }
 }
