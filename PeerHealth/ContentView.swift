@@ -9,6 +9,7 @@ import SwiftUI
 
 struct ContentView: View {
     @StateObject private var viewModel = HealthDashboardViewModel()
+    @StateObject private var tcpConnectionManager = TCPConnectionManager()
     @State private var selectedTab: AppTab = .home
     @AppStorage("peerHealthUseDemoData") private var useDemoData = false
 
@@ -26,7 +27,7 @@ struct ContentView: View {
                         onOpenChat: { selectedTab = .chat }
                     )
                 case .chat:
-                    ChatTabView()
+                    ChatTabView(connectionManager: tcpConnectionManager)
                 case .profile:
                     ProfileTabView(
                         viewModel: viewModel,
@@ -650,9 +651,9 @@ private struct HomeTabView: View {
 }
 
 private struct ChatTabView: View {
+    @ObservedObject var connectionManager: TCPConnectionManager
     @State private var draftMessage = ""
-
-    private let messages: [ChatMessage] = [
+    @State private var messages: [ChatMessage] = [
         ChatMessage(role: .assistant, text: "I noticed your HRV dropped yesterday while your sleep duration also trended lower. Want me to break down likely causes?"),
         ChatMessage(role: .user, text: "Yes, and compare it with my resting heart rate too."),
         ChatMessage(role: .assistant, text: "Your resting heart rate moved up slightly overnight, which often pairs with reduced recovery. The strongest signal here is short sleep plus elevated stress midday."),
@@ -672,6 +673,8 @@ private struct ChatTabView: View {
                     }
                     .padding(.bottom, 4)
 
+                    connectionSection
+
                     ForEach(messages) { message in
                         chatBubble(message)
                     }
@@ -690,6 +693,7 @@ private struct ChatTabView: View {
                     .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
 
                 Button {
+                    sendDraftMessage()
                 } label: {
                     Image(systemName: "arrow.up")
                         .font(.system(size: 18, weight: .bold))
@@ -707,6 +711,68 @@ private struct ChatTabView: View {
         }
     }
 
+    private var connectionSection: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Asus GX10 connection")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color(red: 0.18, green: 0.18, blue: 0.2))
+
+            HStack(spacing: 12) {
+                TextField("IP address", text: $connectionManager.host)
+                    .textInputAutocapitalization(.never)
+                    .autocorrectionDisabled()
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 14)
+                    .frame(height: 48)
+                    .background(Color(red: 0.96, green: 0.96, blue: 0.97))
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+
+                TextField("Port", text: $connectionManager.port)
+                    .keyboardType(.numberPad)
+                    .textFieldStyle(.plain)
+                    .padding(.horizontal, 14)
+                    .frame(width: 96, height: 48)
+                    .background(Color(red: 0.96, green: 0.96, blue: 0.97))
+                    .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+            }
+
+            HStack(spacing: 12) {
+                Button(connectionManager.isConnected ? "Disconnect" : "Connect") {
+                    if connectionManager.isConnected {
+                        connectionManager.disconnect()
+                    } else {
+                        connectionManager.connect { response in
+                            guard !response.isEmpty else { return }
+                            messages.append(ChatMessage(role: .assistant, text: response))
+                        }
+                    }
+                }
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 48)
+                .background(connectionManager.isConnected ? Color(red: 0.6, green: 0.18, blue: 0.2) : Color(red: 0.11, green: 0.11, blue: 0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+                .buttonStyle(.plain)
+
+                Circle()
+                    .fill(connectionManager.isConnected ? Color(red: 0.34, green: 0.78, blue: 0.65) : Color(red: 0.95, green: 0.66, blue: 0.07))
+                    .frame(width: 12, height: 12)
+            }
+
+            Text(connectionManager.statusText)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Color(red: 0.55, green: 0.55, blue: 0.58))
+        }
+        .padding(18)
+        .background(Color.white)
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color(red: 0.91, green: 0.91, blue: 0.93), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
     private func chatBubble(_ message: ChatMessage) -> some View {
         VStack(alignment: message.role == .assistant ? .leading : .trailing, spacing: 8) {
             Text(message.role.title)
@@ -722,6 +788,15 @@ private struct ChatTabView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         }
         .frame(maxWidth: .infinity, alignment: message.role == .assistant ? .leading : .trailing)
+    }
+
+    private func sendDraftMessage() {
+        let trimmedMessage = draftMessage.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedMessage.isEmpty else { return }
+
+        messages.append(ChatMessage(role: .user, text: trimmedMessage))
+        connectionManager.send(trimmedMessage)
+        draftMessage = ""
     }
 }
 
