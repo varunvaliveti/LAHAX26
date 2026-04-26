@@ -10,6 +10,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var viewModel = HealthDashboardViewModel()
     @StateObject private var tcpConnectionManager = TCPConnectionManager()
+    @StateObject private var healthAutoSyncManager = HealthAutoSyncManager()
     @State private var selectedTab: AppTab = .home
     @AppStorage("peerHealthUseDemoData") private var useDemoData = false
 
@@ -27,7 +28,10 @@ struct ContentView: View {
                         onOpenChat: { selectedTab = .chat }
                     )
                 case .chat:
-                    ChatTabView(connectionManager: tcpConnectionManager)
+                    ChatTabView(
+                        connectionManager: tcpConnectionManager,
+                        autoSyncManager: healthAutoSyncManager
+                    )
                 case .profile:
                     ProfileTabView(
                         viewModel: viewModel,
@@ -652,6 +656,7 @@ private struct HomeTabView: View {
 
 private struct ChatTabView: View {
     @ObservedObject var connectionManager: TCPConnectionManager
+    @ObservedObject var autoSyncManager: HealthAutoSyncManager
     @State private var draftMessage = ""
     @State private var messages: [ChatMessage] = [
         ChatMessage(role: .assistant, text: "I noticed your HRV dropped yesterday while your sleep duration also trended lower. Want me to break down likely causes?"),
@@ -674,6 +679,7 @@ private struct ChatTabView: View {
                     .padding(.bottom, 4)
 
                     connectionSection
+                    autoSyncSection
 
                     ForEach(messages) { message in
                         chatBubble(message)
@@ -761,6 +767,64 @@ private struct ChatTabView: View {
             }
 
             Text(connectionManager.statusText)
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Color(red: 0.55, green: 0.55, blue: 0.58))
+        }
+        .padding(18)
+        .background(Color.white)
+        .overlay(
+            RoundedRectangle(cornerRadius: 20, style: .continuous)
+                .stroke(Color(red: 0.91, green: 0.91, blue: 0.93), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+    }
+
+    private var autoSyncSection: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("HealthKit auto sync")
+                .font(.system(size: 16, weight: .semibold))
+                .foregroundStyle(Color(red: 0.18, green: 0.18, blue: 0.2))
+
+            Text("Watches Health updates and forwards incremental payloads to Asus when TCP is connected.")
+                .font(.system(size: 14, weight: .medium))
+                .foregroundStyle(Color(red: 0.55, green: 0.55, blue: 0.58))
+
+            HStack(spacing: 12) {
+                Button(autoSyncManager.isSyncEnabled ? "Stop Auto Sync" : "Start Auto Sync") {
+                    if autoSyncManager.isSyncEnabled {
+                        autoSyncManager.stopAutoSync()
+                    } else {
+                        Task {
+                            await autoSyncManager.startAutoSync { payload in
+                                if connectionManager.isConnected {
+                                    connectionManager.send(payload)
+                                }
+                                messages.append(
+                                    ChatMessage(
+                                        role: .assistant,
+                                        text: connectionManager.isConnected
+                                        ? "Auto-synced update forwarded to Asus."
+                                        : "Auto-sync captured a Health update. Connect TCP to forward."
+                                    )
+                                )
+                            }
+                        }
+                    }
+                }
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 46)
+                .background(autoSyncManager.isSyncEnabled ? Color(red: 0.6, green: 0.18, blue: 0.2) : Color(red: 0.11, green: 0.11, blue: 0.12))
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
+                .buttonStyle(.plain)
+
+                Circle()
+                    .fill(autoSyncManager.isSyncEnabled ? Color(red: 0.34, green: 0.78, blue: 0.65) : Color(red: 0.95, green: 0.66, blue: 0.07))
+                    .frame(width: 12, height: 12)
+            }
+
+            Text(autoSyncManager.statusText)
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(Color(red: 0.55, green: 0.55, blue: 0.58))
         }

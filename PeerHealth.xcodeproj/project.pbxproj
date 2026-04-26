@@ -398,7 +398,7 @@
 				CODE_SIGN_ENTITLEMENTS = PeerHealth/PeerHealth.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 4J8DJ7WR6V;
+				DEVELOPMENT_TEAM = 93T4T3BNCH;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "PeerHealth reads your Apple Health data to show summaries and to power on-device health insights. Data stays on your devices unless you send it to your private agent.";
@@ -413,7 +413,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.varun.PeerHealth;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sarbesh.PeerHealth;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;
@@ -433,7 +433,7 @@
 				CODE_SIGN_ENTITLEMENTS = PeerHealth/PeerHealth.entitlements;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
-				DEVELOPMENT_TEAM = 4J8DJ7WR6V;
+				DEVELOPMENT_TEAM = 93T4T3BNCH;
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_KEY_NSHealthShareUsageDescription = "PeerHealth reads your Apple Health data to show summaries and to power on-device health insights. Data stays on your devices unless you send it to your private agent.";
@@ -448,7 +448,7 @@
 					"@executable_path/Frameworks",
 				);
 				MARKETING_VERSION = 1.0;
-				PRODUCT_BUNDLE_IDENTIFIER = com.varun.PeerHealth;
+				PRODUCT_BUNDLE_IDENTIFIER = com.sarbesh.PeerHealth;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				STRING_CATALOG_GENERATE_SYMBOLS = YES;
 				SWIFT_APPROACHABLE_CONCURRENCY = YES;

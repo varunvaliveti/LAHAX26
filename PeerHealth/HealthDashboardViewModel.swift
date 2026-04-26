@@ -253,7 +253,7 @@ private extension HealthDashboardViewModel {
         )
         async let standHours = optionalCumulative(
             .appleStandTime,
-            unit: .count(),
+            unit: .minute(),
             from: startOfToday,
             to: now
         )
@@ -323,10 +323,6 @@ private extension HealthDashboardViewModel {
         )
         async let workouts = countWorkouts(days: 7, ending: now)
         async let mindfulMin = sumMindfulSessionMinutes(days: 7, ending: now)
-        async let userProfile = loadUserProfile(
-            heightMeters: { await heightM },
-            weightKg: { await weightKg }
-        )
 
         let rResting = await resting
         let rHrv = await hrv
@@ -354,9 +350,9 @@ private extension HealthDashboardViewModel {
         let rHrLatest = await hrLatest
         let rWorkouts = await workouts
         let rMindful = await mindfulMin
-        let prof = await userProfile
+        let prof = loadUserProfile(heightMeters: rHeight, weightKg: rWeight)
 
-        var metrics: [HealthMetric] = [
+        let metrics: [HealthMetric] = [
             metric("Resting Heart Rate", rResting, "bpm", "Most recent resting heart rate sample in HealthKit."),
             metric("Heart Rate Variability", rHrv, "ms", "Latest HRV (SDNN)."),
             metric("Heart Rate (latest)", rHrLatest, "bpm", "Most recent heart rate sample."),
@@ -368,7 +364,7 @@ private extension HealthDashboardViewModel {
             metric("Step Count", rSteps, "steps", "Steps recorded today (start of day to now)."),
             metric("Active Energy", rActive, "kcal", "Active calories burned today."),
             metric("Exercise Minutes", rEx, "min", "Apple exercise minutes for today (Move ring)."),
-            metric("Stand Hours", rStand, "hrs", "Apple Stand hours closed today (ring progress)."),
+            metric("Stand Hours", (rStand.map { $0 / 60.0 }), "hrs", "Apple Stand hours closed today (ring progress)."),
             metric("Walking & Running Dist.", (rDist.map { $0 / 1609.34 }), "mi", "Distance walking/running for today in miles."),
             metric("Flights Climbed", rFlights, "flights", "Flights of stairs for today when recorded."),
             metric("Sleep (last 24h asleep)", rSleep, "hrs", "Total asleep time in the last 24 hours from sleep stages."),
@@ -422,7 +418,7 @@ private extension HealthDashboardViewModel {
 
     // MARK: Characteristics + profile
 
-    func loadUserProfile(heightMeters: () async -> Double?, weightKg: () async -> Double?) async -> UserHealthProfile {
+    func loadUserProfile(heightMeters: Double?, weightKg: Double?) -> UserHealthProfile {
         var ageLine = "Not set in Health"
         if let dob = try? healthStore.dateOfBirthComponents().date {
             let years = Calendar.current.dateComponents([.year], from: dob, to: Date()).year ?? 0
@@ -442,8 +438,8 @@ private extension HealthDashboardViewModel {
             }
         }
 
-        let hM = await heightMeters()
-        let wK = await weightKg()
+        let hM = heightMeters
+        let wK = weightKg
 
         let hStr: String
         if let m = hM, m > 0 {
@@ -760,4 +756,3 @@ private extension HealthDashboardViewModel {
         )
     }
 }
-
