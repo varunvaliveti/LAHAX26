@@ -10,6 +10,7 @@ import SwiftUI
 struct ContentView: View {
     @StateObject private var viewModel = HealthDashboardViewModel()
     @State private var selectedTab: AppTab = .home
+    @AppStorage("peerHealthUseDemoData") private var useDemoData = false
 
     var body: some View {
         ZStack(alignment: .bottom) {
@@ -19,13 +20,18 @@ struct ContentView: View {
             Group {
                 switch selectedTab {
                 case .home:
-                    HomeTabView(viewModel: viewModel, onOpenChat: {
-                        selectedTab = .chat
-                    })
+                    HomeTabView(
+                        viewModel: viewModel,
+                        useDemoData: useDemoData,
+                        onOpenChat: { selectedTab = .chat }
+                    )
                 case .chat:
                     ChatTabView()
                 case .profile:
-                    ProfileTabView()
+                    ProfileTabView(
+                        viewModel: viewModel,
+                        useDemoData: $useDemoData
+                    )
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -33,7 +39,10 @@ struct ContentView: View {
             bottomTabBar
         }
         .task {
-            await viewModel.loadMetrics(useSimulation: true)
+            await viewModel.bootstrap(useSimulation: useDemoData)
+        }
+        .onChange(of: useDemoData) { _, new in
+            Task { await viewModel.bootstrap(useSimulation: new) }
         }
     }
 
@@ -85,6 +94,7 @@ private enum AppTab {
 
 private struct HomeTabView: View {
     @ObservedObject var viewModel: HealthDashboardViewModel
+    var useDemoData: Bool
     let onOpenChat: () -> Void
 
     private let cardColumns = [
@@ -96,6 +106,7 @@ private struct HomeTabView: View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 26) {
                 headerSection
+                dataSourcePill
                 insightsSection
                 summarySection
                 extendedSummarySection
@@ -106,11 +117,14 @@ private struct HomeTabView: View {
             .padding(.top, 18)
             .padding(.bottom, 120)
         }
+        .refreshable {
+            await viewModel.bootstrap(useSimulation: useDemoData)
+        }
     }
 
     private var headerSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            Text("Sunday, April 26")
+            Text(Date.now.formatted(.dateTime.weekday(.wide).month(.wide).day()))
                 .font(.system(size: 17, weight: .medium))
                 .foregroundStyle(Color(red: 0.59, green: 0.59, blue: 0.62))
 
@@ -118,6 +132,16 @@ private struct HomeTabView: View {
                 .font(.system(size: 28, weight: .bold))
                 .foregroundStyle(Color(red: 0.12, green: 0.12, blue: 0.14))
         }
+    }
+
+    private var dataSourcePill: some View {
+        Text(viewModel.statusMessage)
+            .font(.system(size: 13, weight: .medium))
+            .foregroundStyle(Color(red: 0.45, green: 0.45, blue: 0.48))
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .background(Color(red: 0.96, green: 0.97, blue: 0.98))
+            .clipShape(Capsule())
     }
 
     private var insightsSection: some View {
@@ -135,20 +159,10 @@ private struct HomeTabView: View {
             }
 
             VStack(spacing: 0) {
-                insightRow(
-                    title: "Sleep dipped on Thursday",
-                    message: "You averaged 5h 54m. Try winding down 30 min earlier tonight."
-                )
-                divider
-                insightRow(
-                    title: "Resting HR trending lower",
-                    message: "Down 3 bpm vs last week — a sign of improving recovery."
-                )
-                divider
-                insightRow(
-                    title: "Stress peaked midday",
-                    message: "Consider a 5-minute breathing break around 1pm."
-                )
+                ForEach(Array(generatedInsights.enumerated()), id: \.offset) { index, item in
+                    if index > 0 { divider }
+                    insightRow(title: item.title, message: item.message)
+                }
             }
             .background(Color.white)
             .overlay(
@@ -157,6 +171,53 @@ private struct HomeTabView: View {
             )
             .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
         }
+    }
+
+    private var generatedInsights: [(title: String, message: String)] {
+        var out: [(String, String)] = []
+        if let slp = sleepHoursValue, slp < 7 {
+            out.append((
+                "Sleep under a common 7h target",
+                "You logged about \(String(format: "%.1f", slp))h of asleep time. Consider an earlier wind-down and consistent wake time."
+            ))
+        } else if let slp = sleepHoursValue, slp >= 7 {
+            out.append((
+                "Recovery window looks solid",
+                "You logged about \(String(format: "%.1f", slp))h of asleep time in the last 24h — keep the rhythm."
+            ))
+        }
+        if let rhr = metricValue(named: "Resting Heart Rate"), rhr < 60 {
+            out.append((
+                "Resting heart rate in a trained range",
+                "Your latest resting HR is about \(Int(rhr)) bpm. If this is new, track how it lines up with sleep and load."
+            ))
+        } else if let hrv = metricValue(named: "Heart Rate Variability"), hrv < 30 {
+            out.append((
+                "HRV is on the lower side",
+                "Latest HRV is around \(String(format: "%.0f", hrv)) ms. Recovery tools (sleep, light activity, stress breaks) can help nudge it up."
+            ))
+        }
+        if let steps = metricValue(named: "Step Count"), steps < 4_000 {
+            out.append((
+                "Movement is light so far",
+                "About \(Int(steps)) steps today — short walks or a 10-minute reset can move the dial."
+            ))
+        }
+        if out.isEmpty {
+            return [
+                ("No strong signals yet", "Pull to refresh after you grant Apple Health access, or add data in the Health app."),
+                ("Tip", "HRV and resting HR are easier to read when you wear a watch at night and keep sleep stages enabled."),
+                ("Tip", "Turn on demo data in Profile if you are testing the UI in Simulator.")
+            ]
+        }
+        if out.count > 3 { return Array(out.prefix(3)) }
+        let more = [
+            ("Local analysis", "These insights use only data on this device. Your on-device agent can add more on GX10."),
+            ("Wearables", "Enable sleep stages in Apple Health for more accurate rest metrics.")
+        ]
+        var o = out
+        for row in more where o.count < 3 { o.append(row) }
+        return o
     }
 
     private var summarySection: some View {
@@ -179,7 +240,7 @@ private struct HomeTabView: View {
                     title: "Heart rate",
                     valueText: heartRateValue,
                     unitText: "bpm",
-                    detail: "Resting · normal",
+                    detail: heartRateDetail,
                     dotColor: Color(red: 0.34, green: 0.78, blue: 0.65)
                 )
 
@@ -188,7 +249,7 @@ private struct HomeTabView: View {
                     title: "Sleep",
                     valueText: sleepValue,
                     unitText: nil,
-                    detail: "Below your goal",
+                    detail: sleepDetail,
                     dotColor: Color(red: 0.95, green: 0.66, blue: 0.07)
                 )
 
@@ -197,7 +258,7 @@ private struct HomeTabView: View {
                     title: "Activity",
                     valueText: stepsValue,
                     unitText: "steps",
-                    detail: "70% of daily goal",
+                    detail: stepDetail,
                     dotColor: Color(red: 0.34, green: 0.78, blue: 0.65)
                 )
 
@@ -206,7 +267,7 @@ private struct HomeTabView: View {
                     title: "Stress",
                     valueText: stressValue,
                     unitText: nil,
-                    detail: "Moderate",
+                    detail: stressDetail,
                     dotColor: Color(red: 0.95, green: 0.66, blue: 0.07)
                 )
             }
@@ -217,59 +278,83 @@ private struct HomeTabView: View {
         VStack(alignment: .leading, spacing: 22) {
             LazyVGrid(columns: cardColumns, spacing: 12) {
                 summaryCard(
-                    symbol: "waveform.path.ecg",
-                    title: "Activity",
-                    valueText: stepsValue,
-                    unitText: "steps",
-                    detail: "71% of daily goal",
+                    symbol: "flame",
+                    title: "Active energy",
+                    valueText: activeEnergyValue,
+                    unitText: "kcal",
+                    detail: "Today, Apple Health",
                     dotColor: Color(red: 0.34, green: 0.78, blue: 0.65)
                 )
 
                 summaryCard(
-                    symbol: "brain.head.profile",
-                    title: "Stress",
-                    valueText: stressValue,
-                    unitText: nil,
-                    detail: "Moderate",
-                    dotColor: Color(red: 0.95, green: 0.66, blue: 0.07)
+                    symbol: "figure.strengthtraining.traditional",
+                    title: "Workouts",
+                    valueText: workoutCountValue,
+                    unitText: "7d",
+                    detail: "Sessions in last 7 days",
+                    dotColor: Color(red: 0.34, green: 0.78, blue: 0.65)
                 )
             }
 
             chartCard(
                 title: "Heart rate",
-                valueText: "72",
-                unitText: "avg bpm",
+                valueText: chartHeartRateValue,
+                unitText: chartHeartRateSubtext,
                 trailingText: "Today",
                 chartHeight: 86
             ) {
-                HeartRateLineShape()
+                if viewModel.snapshot.heartRateLineNormalizedYs.count >= 2 {
+                    NormalizedHeartLineShape(
+                        yNorm: viewModel.snapshot.heartRateLineNormalizedYs
+                    )
                     .stroke(Color(red: 0.46, green: 0.52, blue: 0.64), style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
                     .padding(.horizontal, 6)
                     .padding(.vertical, 10)
+                } else {
+                    Text("Add heart rate samples in Health for an intraday line")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(Color(red: 0.55, green: 0.55, blue: 0.58))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+                }
             }
 
             chartCard(
                 title: "Sleep this week",
-                valueText: "7.1",
+                valueText: weekAvgSleepString,
                 unitText: "avg hrs",
                 trailingText: "7d",
                 chartHeight: 120
             ) {
-                VStack(spacing: 14) {
-                    Spacer()
-                    HStack {
-                        ForEach(["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"], id: \.self) { day in
-                            Spacer()
-                            Text(day)
-                                .font(.system(size: 14, weight: .semibold))
+                HStack(alignment: .bottom, spacing: 6) {
+                    ForEach(Array(viewModel.snapshot.weekSleep.enumerated()), id: \.offset) { _, d in
+                        VStack(spacing: 6) {
+                            if let h = d.hours, h > 0 {
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .fill(Color(red: 0.46, green: 0.52, blue: 0.64))
+                                    .frame(height: CGFloat(min(h / 10, 1)) * 44 + 4)
+                            } else {
+                                RoundedRectangle(cornerRadius: 4, style: .continuous)
+                                    .fill(Color(red: 0.9, green: 0.91, blue: 0.93))
+                                    .frame(height: 4)
+                            }
+                            Text(d.weekdayLabel)
+                                .font(.system(size: 12, weight: .semibold))
                                 .foregroundStyle(Color(red: 0.67, green: 0.67, blue: 0.7))
-                            Spacer()
+                            Text(sleepLabelShort(d.hours))
+                                .font(.system(size: 10, weight: .medium))
+                                .foregroundStyle(Color(red: 0.5, green: 0.5, blue: 0.53))
                         }
+                        .frame(maxWidth: .infinity)
                     }
                 }
-                .padding(.bottom, 6)
+                .padding(.bottom, 4)
             }
         }
+    }
+
+    private func sleepLabelShort(_ h: Double?) -> String {
+        guard let h, h > 0 else { return "—" }
+        return String(format: "%.1fh", h)
     }
 
     private var conversationsSection: some View {
@@ -478,35 +563,85 @@ private struct HomeTabView: View {
     }
 
     private var heartRateValue: String {
-        metricValue(named: "Resting Heart Rate")
-            .map { String(Int($0.rounded())) } ?? "72"
+        if let v = metricValue(named: "Resting Heart Rate") { return String(Int(v.rounded())) }
+        if let v = metricValue(named: "Walking HR average") { return String(Int(v.rounded())) }
+        if let v = metricValue(named: "Heart Rate (latest)") { return String(Int(v.rounded())) }
+        return "—"
+    }
+
+    private var heartRateDetail: String {
+        if metricValue(named: "Resting Heart Rate") != nil { return "Resting (HealthKit)" }
+        if let v = metricValue(named: "Heart Rate (latest)") { return "Latest: \(Int(v)) bpm" }
+        return "No RHR in Health"
+    }
+
+    private var sleepHoursValue: Double? {
+        metricValue(named: "Sleep (last 24h asleep)")
     }
 
     private var sleepValue: String {
-        guard let hours = metricValue(named: "Sleep Duration") else {
-            return "6h 42m"
-        }
-
+        guard let hours = sleepHoursValue, hours > 0 else { return "—" }
         let totalMinutes = Int((hours * 60).rounded())
         let hourPart = totalMinutes / 60
         let minutePart = totalMinutes % 60
         return "\(hourPart)h \(minutePart)m"
     }
 
-    private var stepsValue: String {
-        guard let steps = metricValue(named: "Step Count") else {
-            return "6,420"
-        }
+    private var sleepDetail: String {
+        guard let h = sleepHoursValue, h > 0 else { return "No sleep stage data" }
+        if h < 7 { return "Below a common 7h target" }
+        return "In range for many users"
+    }
 
+    private var stepsValue: String {
+        guard let steps = metricValue(named: "Step Count"), steps > 0 else { return "—" }
         return Int(steps).formatted(.number.grouping(.automatic))
     }
 
-    private var stressValue: String {
-        guard let hrv = metricValue(named: "Heart Rate Variability") else {
-            return "38"
-        }
+    private var stepDetail: String {
+        let goal: Double = 10_000
+        guard let steps = metricValue(named: "Step Count") else { return "No step data" }
+        let p = min(100, max(0, (steps / goal) * 100))
+        return String(format: "%.0f%% of a 10k step goal", p)
+    }
 
+    private var stressValue: String {
+        guard let hrv = metricValue(named: "Heart Rate Variability") else { return "—" }
         return String(Int(max(18, min(82, 80 - hrv)).rounded()))
+    }
+
+    private var stressDetail: String {
+        guard let hrv = metricValue(named: "Heart Rate Variability") else { return "HRV not available" }
+        if hrv < 30 { return "HRV is relatively low" }
+        if hrv < 50 { return "HRV in a moderate range" }
+        return "HRV looks comfortable"
+    }
+
+    private var activeEnergyValue: String {
+        guard let v = metricValue(named: "Active Energy"), v > 0 else { return "—" }
+        return String(Int(v.rounded()))
+    }
+
+    private var workoutCountValue: String {
+        guard let w = metricValue(named: "Workouts (7d count)"), w >= 0 else { return "—" }
+        return String(Int(w.rounded()))
+    }
+
+    private var chartHeartRateValue: String {
+        if let a = metricValue(named: "Heart Rate (today avg)") { return String(Int(a.rounded())) }
+        if let a = metricValue(named: "Resting Heart Rate") { return String(Int(a.rounded())) }
+        return "—"
+    }
+
+    private var chartHeartRateSubtext: String {
+        if metricValue(named: "Heart Rate (today avg)") != nil { return "avg bpm" }
+        if metricValue(named: "Resting Heart Rate") != nil { return "resting" }
+        return "bpm"
+    }
+
+    private var weekAvgSleepString: String {
+        if let a = viewModel.snapshot.averageSleepThisWeek { return String(format: "%.1f", a) }
+        return "—"
     }
 
     private func metricValue(named title: String) -> Double? {
@@ -591,6 +726,9 @@ private struct ChatTabView: View {
 }
 
 private struct ProfileTabView: View {
+    @ObservedObject var viewModel: HealthDashboardViewModel
+    @Binding var useDemoData: Bool
+
     var body: some View {
         ScrollView(showsIndicators: false) {
             VStack(alignment: .leading, spacing: 22) {
@@ -619,11 +757,23 @@ private struct ProfileTabView: View {
                         .foregroundStyle(Color(red: 0.46, green: 0.46, blue: 0.5))
                 }
 
-                profileCard(title: "Vitals sharing") {
-                    profileRow(label: "Age range", value: "40-44")
-                    profileRow(label: "Biological sex", value: "Male")
-                    profileRow(label: "Height", value: "5'11\"")
-                    profileRow(label: "Weight", value: "178 lb")
+                Toggle("Use demo health data (no HealthKit)", isOn: $useDemoData)
+                    .font(.system(size: 16, weight: .semibold))
+                    .tint(Color(red: 0.11, green: 0.11, blue: 0.12))
+                    .padding(16)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.white)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 20, style: .continuous)
+                            .stroke(Color(red: 0.91, green: 0.91, blue: 0.93), lineWidth: 1)
+                    )
+                    .clipShape(RoundedRectangle(cornerRadius: 20, style: .continuous))
+
+                profileCard(title: "Vitals (from Health when available)") {
+                    profileRow(label: "Age", value: viewModel.snapshot.userProfile.ageDescription)
+                    profileRow(label: "Biological sex", value: viewModel.snapshot.userProfile.sexDescription)
+                    profileRow(label: "Height", value: viewModel.snapshot.userProfile.heightDescription)
+                    profileRow(label: "Weight", value: viewModel.snapshot.userProfile.weightDescription)
                 }
 
                 profileCard(title: "Conditions") {
@@ -729,30 +879,24 @@ private struct FlowLayout: View {
     }
 }
 
-private struct HeartRateLineShape: Shape {
+/// Renders a polyline of normalized 0...1 y-values across the view width.
+private struct NormalizedHeartLineShape: Shape {
+    var yNorm: [CGFloat]
+
     func path(in rect: CGRect) -> Path {
         var path = Path()
-        path.move(to: CGPoint(x: rect.minX, y: rect.height * 0.72))
-        path.addCurve(
-            to: CGPoint(x: rect.width * 0.42, y: rect.height * 0.44),
-            control1: CGPoint(x: rect.width * 0.14, y: rect.height * 0.62),
-            control2: CGPoint(x: rect.width * 0.28, y: rect.height * 0.42)
-        )
-        path.addCurve(
-            to: CGPoint(x: rect.width * 0.6, y: rect.height * 0.53),
-            control1: CGPoint(x: rect.width * 0.5, y: rect.height * 0.5),
-            control2: CGPoint(x: rect.width * 0.54, y: rect.height * 0.6)
-        )
-        path.addCurve(
-            to: CGPoint(x: rect.width * 0.74, y: rect.height * 0.38),
-            control1: CGPoint(x: rect.width * 0.66, y: rect.height * 0.47),
-            control2: CGPoint(x: rect.width * 0.68, y: rect.height * 0.32)
-        )
-        path.addCurve(
-            to: CGPoint(x: rect.maxX, y: rect.height * 0.66),
-            control1: CGPoint(x: rect.width * 0.83, y: rect.height * 0.5),
-            control2: CGPoint(x: rect.width * 0.9, y: rect.height * 0.64)
-        )
+        guard yNorm.count >= 2 else { return path }
+        let n = yNorm.count - 1
+        for (i, yn) in yNorm.enumerated() {
+            let yClamped = min(1, max(0, yn))
+            let x = rect.minX + rect.width * CGFloat(i) / CGFloat(n)
+            let y = rect.maxY - yClamped * rect.height
+            if i == 0 {
+                path.move(to: CGPoint(x: x, y: y))
+            } else {
+                path.addLine(to: CGPoint(x: x, y: y))
+            }
+        }
         return path
     }
 }
